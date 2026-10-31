@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function staffPath() { return /databases/$(database)/documents/staff/$(request.auth.uid); }
+    function setupPath() { return /databases/$(database)/documents/meta/setup; }
+    function isStaff()   { return signedIn() && exists(staffPath()) && get(staffPath()).data.active == true; }
+    function isSuper()   { return isStaff() && get(staffPath()).data.role == 'super'; }
+
+    // One-time setup marker. Only the very first signed-in person can create it.
+    match /meta/{docId} {
+      allow read: if true;
+      allow create: if docId == 'setup' && signedIn() && !exists(setupPath())
+                    && request.resource.data.by == request.auth.uid;
+    }
+
+    // Who may use the portal. Only the super admin can add / change / remove staff.
+    match /staff/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isSuper());
+      allow create: if isSuper()
+                    || (signedIn() && request.auth.uid == uid
+                        && request.resource.data.role == 'super'
+                        && exists(setupPath()) && get(setupPath()).data.by == request.auth.uid);
+      allow update, delete: if isSuper();
+    }
+
+    // School data. The public website may read only the settings, the gallery and the login map.
+    match /kv/{docId} {
+      allow read: if docId == 'settings' || docId == 'authmap' || docId.matches('gal_.*') || isStaff();
+      allow write: if isSuper()
+                   || (isStaff() && docId != 'users' && docId != 'settings'
+                       && docId != 'authmap' && !docId.matches('gal_.*'));
+    }
+
+    // Encrypted student-portal records: a student can fetch only their own record by its secret id.
+    match /pub/{docId} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update, delete: if isStaff();
+    }
+  }
+}
